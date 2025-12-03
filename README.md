@@ -1,91 +1,185 @@
+# Sistema Intel·ligent de Monitoratge del Port de Barcelona
 
-# Psiv2-Tracking
+Aquest projecte implementa un sistema avançat de monitoratge al Port de Barcelona utilitzant càmeres existents, xarxa 5G i models d'IA. La solució detecta, segueix i analitza vehicles en temps real, generant dades estructurades per al control operatiu, la seguretat i l'anàlisi històrica.
 
-Reto de seguimiento de coches en vídeo usando YOLOv11n y técnicas de tracking.
+El sistema inclou detecció amb YOLO, tracking propi amb recompte de vehicles, integració amb AWS i un dashboard interactiu en Streamlit.
 
-## Descripción
-Proyecto para detectar, seguir y contar vehículos en vídeos usando modelos YOLOv11 (`weights/`) y un módulo de tracking propio (`tracker.py`). Incluye utilidades para procesar frames y generar vídeos de salida en `runs/`.
+## 1. Objectiu del projecte
 
-## Requisitos
-- Python 3.10 - 3.12 (recomendado)
-- GPU opcional (recomendado para velocidad)
-- Archivos principales:
-  - `main.py`
-  - `detection_frames.py`
-  - `tracker.py`
-  - `VehicleCounter.py`
-  - `utilities.py`
-  - pesos en `weights/` (ej. `yolo11n.pt`, `yolo11s.pt`)
+L'objectiu és proporcionar una eina de monitoratge capaç de:
 
-## Instalación (Windows - cmd.exe)
+- Detectar vehicles en temps real.
+- Fer seguiment robust amb ID persistent.
+- Comptar entrades, sortides i direccions de moviment.
+- Exportar dades per anàlisi posterior.
+- Mostrar informació en un dashboard centralitzat.
+- Escalar a múltiples càmeres i zones del port.
 
-##### Opción A — entorno virtual + pip:
-1. Crear y activar venv:
-python -m venv .venv .venv\Scripts\activate
-2. Actualizar pip(Opcional, es buena costumbre):
-python -m pip install --upgrade pip
-3. Instalar resto de dependencias:
-pip install -r requirements.txt
-Si te da un error con torch, es posible que tengas que instalar torch manualmente.
+## 2. Arquitectura general
 
-##### Opción B — conda:
-1. Crear entorno conda:
-conda env create -f environment.yml
-2. Activar entorno:
-conda activate psiv2-tracking
+**Pipeline complet:**
 
-Si algo falla, con el env creado haz pip install -r requirements.txt
+- **Entrada**: vídeos del port.
+- **YOLOv11**: detecció cada N frames (optimitzat per temps real).
+- **Tracker**: seguiment amb predicció per mantenir IDs consistents.
+- **Recompte**: línies horitzontals i verticals per detectar entrades/sortides i moviments.
+- **Generació d'events**: JSON amb dades d'aforament, trajectòries i metadades.
 
-## Cómo probar el contador de vehiculos
+**Exportació al núvol:**
 
-1. Asegurate de tener al menos un vídeo en la carpeta `videos/` para probar el código. Y adaptar el path en `main.py` si es necesario.
-2. Ejecutar el script `main.py` con Python. Asegurarse de tener instaladas las dependencias necesarias (OpenCV, NumPy, etc.).
-3. Resultados y vídeos procesados se guardan en `runs/cars_video/`. Igualmente en vivo puedes ver el seguimiento y conteo en una ventana emergente.
+- Vídeos processats → AWS S3
+- JSON d'events → DynamoDB
+- Dashboard Streamlit: visualització del trànsit, aforament i vídeos.
 
+## 3. Implementació del tracker
 
-## Estructura del proyecto
-- `main.py` — script principal.
-- `detection_frames.py` — procesamiento por frame y llamadas al tracker.
-- `tracker.py` — clases de tracking y lógica de asociación.
-- `car.py` — clase para representar vehículos y guardar su información.
-- `VehicleCounter.py` — lógica de conteo.
-- `utilities.py` — funciones auxiliares.
-- `weights/` — modelos YOLO.
-- `videos/` — vídeos de entrada.
-- `runs/cars_video/` — salidas generadas.
+### Detecció (YOLOv11)
 
-## Pipeline del proyecto
-![Tracker.drawio.png](Tracker.drawio.png)
+- Execució configurable cada X frames (`--skip`) per garantir temps real.
+- Filtrat per classe (només cotxes).
+- Deteccions convertides a bounding boxes per al tracker.
 
-## Descripcion de la detección
-La detección de vehículos se realiza utilizando el modelo YOLOv11n preentrenado, que es capaz de identificar múltiples clases de objetos en imágenes y vídeos.
-Utilizamos yolo cada x frames (2,3 o 4 en diferentes fases del proyecto) para detectar los vehículos en el vídeo. El modelo devuelve bounding boxes (cajas delimitadoras) alrededor de los vehículos detectados, junto con una puntuación de confianza que indica la probabilidad de que la detección sea correcta.
-Usamos un treshold para filtrar las detecciones con baja confianza y quedarnos solo con las más fiables.
+### Tracker propi
 
-## Descripción del tracking
-Después de obtener las detecciones de vehículos en cada frame, el siguiente paso es realizar el seguimiento (tracking) de estos vehículos a lo largo del vídeo.
-Utilizamos las bonding boxes detectadas para asociar detecciones en frames consecutivos. El objetivo es asignar un identificador único a cada vehículo para poder seguir su movimiento a lo largo del tiempo.
-La clase car y la clase tracker se encargan de gestionar esta información. La clase car almacena la información de cada vehículo, incluyendo su bounding box actual, su identificador único y su historial de posiciones.
-La clase tracker es responsable de recibir las detecciones de cada frame y actualizar la información de los vehículos existentes o crear nuevos vehículos si se detectan nuevos objetos.
+El tracker manté identificadors persistents utilitzant:
 
+- Associació de deteccions consecutives
+- Predicció de moviment
+- Gestió d'oclusions
+- Actualització contínua de trajectòries
 
-## Tipos de trackers
-Usamos diferentes trackers. Destacamos dos por sus buenos resultados:
-El class Tracker, que es el tracker padre de el resto y el mas sencillo.
+Funciona amb el mòdul `Tracker` i `Tracker_prediction`.
 
-El class Tracker_prediction, que usa predicción de movimiento para mejorar el tracking en situaciones donde los vehículos se mueven rápidamente o hay oclusiones.
+### Recompte multi-línia
 
-Además, se implementó un tracker híbrido que combina múltiples métricas (IoU, distancia entre centros, predicción de movimiento) para mejorar la precisión del seguimiento. Pero termino
-siendo peor que el tracker con predicción de movimiento solo.
+Utilitzem la classe `VehicleCounter` amb tres línies configurades:
 
-## Resultados
-Resultados del conteo direcciones arriba-abajo
-![Results1.png](Results1.png)
-Resultados del conteo direcciones izquierda-derecha
-![Results2.png](Results2.png)
-![Results2_2.png](Results2_2.png)
+- **Línia horitzontal**: forward / backward
+- **Línia vertical esquerra**: entry
+- **Línia vertical dreta**: exit
 
-## Autores
-- Adrían Díaz : https://github.com/adriidz
-- Miquel González : https://github.com/Miquel44
-- Cristian Rey : https://github.com/Crisis3012
+Cada creuament genera un `event_*.json` amb:
+
+```
+camera_id, timestamp, direction, zone, counter_type, track_id, video_file
+```
+
+Els JSON es guarden a `/datos/`.
+
+## 4. Integració amb AWS
+
+El sistema permet exportar:
+
+### 📤 Vídeos → S3
+
+Els vídeos anotats generats a `runs/cars_video/` es pugen al bucket S3 corresponent.
+
+### 📤 Events JSON → DynamoDB
+
+Els JSON generats es poden inserir a DynamoDB per consultes escalables i integració amb altres serveis.
+
+Aquesta versió inclou la infraestructura i el codi preparat, però l'execució pot mantenir-se en mode local si es desitja.
+
+## 5. Dashboard interactiu (Streamlit)
+
+El dashboard està implementat a `visu.py` i funciona 100% en local.
+
+**Només necessita:**
+
+- JSON a `/datos/`
+- Vídeos a `/runs/cars_video/`
+
+### Funcionalitats principals
+
+**✔️ Filtres**
+
+- Per càmera
+- Per rang de dates
+- Descarrega CSV complet o filtrat
+
+**✔️ Mètriques generals**
+
+- Aforament global i per càmera
+- Nombre total d'esdeveniments
+- Forward / backward
+- Entrades / sortides
+
+**✔️ Evolució temporal**
+
+- Gràfiques resamplejades cada 45s
+- Aforament acumulat
+- Segments per direcció
+
+**✔️ Taula d'esdeveniments**
+
+- Fins a 500 events visibles
+- Ordenats per data
+- Descarregable en CSV
+
+**✔️ Reproducció de vídeo**
+
+- Selecció de vídeo processat
+- Visualització de trajectòries i contadors
+- Taula d'esdeveniments associada al vídeo
+
+### Executar dashboard
+
+```bash
+streamlit run visu.py
+```
+
+**Accés:** http://localhost:8501
+
+## 6. Execució del processador de vídeo
+
+Per processar un vídeo amb YOLO, tracking i generació de JSON:
+
+```bash
+python main.py --video videos/output2.mp4 --camera-id camara_1
+```
+
+**Paràmetres principals:**
+
+- `--video`: Ruta del vídeo a processar (per defecte: `videos/output2.mp4`)
+- `--camera-id`: Identificador de la càmera (per defecte: `camara_1`)
+
+**Paràmetres opcionals:**
+
+- `--weights`: Model YOLO a utilitzar (per defecte: `weights/yolo11n.pt`)
+- `--conf`: Confiança mínima per deteccions (per defecte: `0.5`)
+- `--skip`: Processar cada N frames (per defecte: `3`)
+- `--display`: Mostrar finestra de visualització en temps real
+
+**Exemple:**
+
+```bash
+python main.py --video videos/mon_video.mp4 --camera-id camara_principal --skip 5
+```
+
+**Sortides generades:**
+
+- Vídeos processats → `runs/cars_video/`
+- Events JSON → `datos/`
+
+## 7. Estat actual i futur del projecte
+
+**✔️ Completat:**
+
+- Tracking robust i estable
+- Recompte multi-direccional
+- Exportació al núvol preparada
+- Dashboard complet
+
+**⏳ Pendent:**
+
+- Integració total amb serveis AWS Lambda / API Gateway
+- Detecció de matrícules
+- Detecció d'emissions i anàlisi ambiental
+
+## 8. Autors
+
+- Adrià Fraile
+- Adrián Díaz
+- Amina Aasifar
+- Lian Bagué
+- Pol Guil

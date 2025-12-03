@@ -5,10 +5,11 @@ import time
 from datetime import datetime
 from pathlib import Path
 from tracker import *
+import json
 
 from mqtt_client import AWSClient
-import boto3
-from botocore.exceptions import NoCredentialsError
+# import boto3
+# from botocore.exceptions import NoCredentialsError
 from datetime import datetime
 
 # Must be set before importing ultralytics
@@ -62,7 +63,7 @@ def parse_args():
     p.add_argument("--weights", type=str, default=str(YOLO_DIR / "weights" / "yolo11n.pt"))
     p.add_argument("--conf", type=float, default=0.5)
     p.add_argument("--imgsz", type=int, default=960)
-    p.add_argument("--skip", type=int, default=2, help="Run inference every N frames")
+    p.add_argument("--skip", type=int, default=3, help="Run inference every N frames")
     p.add_argument("--display", action="store_true", default=True, help="Show window (press Q to quit)")  # default ON
     p.add_argument("--reuse-last", action="store_true", default=True, help="Draw last detections on skipped frames")  # default True
     return p.parse_args()
@@ -118,34 +119,35 @@ def setup_display_if_needed(display: bool, width: int, height: int):
         pass
     return win_name
 
-def upload_to_s3(local_file, bucket, s3_file, creds):
-    print(f"Iniciando subida a S3: {s3_file}...")
-    
-    # Cliente S3 con las credenciales explícitas
-    s3 = boto3.client('s3',
-                      aws_access_key_id=creds['ACCESS_KEY'],
-                      aws_secret_access_key=creds['SECRET_KEY'],
-                      aws_session_token=creds['SESSION_TOKEN'],
-                      region_name='us-east-1')
-
-    try:
-        s3.upload_file(local_file, bucket, s3_file)
-        print("¡Subida completada exitosamente!")
-        return True
-    except FileNotFoundError:
-        print("El archivo no se encontró.")
-        return False
-    except NoCredentialsError:
-        print("Credenciales incorrectas.")
-        return False
-    except Exception as e:
-        print(f"Error subiendo a S3: {e}")
-        return False
+# def upload_to_s3(local_file, bucket, s3_file, creds):
+#     print(f"Iniciando subida a S3: {s3_file}...")
+#     
+#     # Cliente S3 con las credenciales explícitas
+#     s3 = boto3.client('s3',
+#                       aws_access_key_id=creds['ACCESS_KEY'],
+#                       aws_secret_access_key=creds['SECRET_KEY'],
+#                       aws_session_token=creds['SESSION_TOKEN'],
+#                       region_name='us-east-1')
+# 
+#     try:
+#         s3.upload_file(local_file, bucket, s3_file)
+#         print("¡Subida completada exitosamente!")
+#         return True
+#     except FileNotFoundError:
+#         print("El archivo no se encontró.")
+#         return False
+#     except NoCredentialsError:
+#         print("Credenciales incorrectas.")
+#         return False
+#     except Exception as e:
+#         print(f"Error subiendo a S3: {e}")
+#         return False
 
 def process_frames(cap: cv2.VideoCapture, writer: cv2.VideoWriter, model, args, width: int, height: int, fps_in: float,
-                   out_path: Path, tracker: Tracker):
+                   out_path: Path, tracker: Tracker, camera_id: str = "camara_1"):
     # 2. Definir nombre del archivo en la nube (usamos el mismo nombre del archivo local)
     # out_path es un objeto Path, lo convertimos a string y cogemos solo el nombre del archivo
+    writer, out_path, width, height, fps_in = prepare_writer(cap)
     file_name_in_s3 = out_path.name 
 
     # Contador horizontal (cuenta ambas direcciones: arriba-abajo)
@@ -172,11 +174,11 @@ def process_frames(cap: cv2.VideoCapture, writer: cv2.VideoWriter, model, args, 
     # Configura esto con TUS DATOS de AWS
     # poner claves whatsapp aqui
 
-    aws = AWSClient(ENDPOINT, PATH_CERT, PATH_KEY, PATH_ROOT)
-    try:
-        aws.connect()
-    except Exception as e:
-        print(f"Error conectando a AWS (seguiré offline): {e}")
+    # aws = AWSClient(ENDPOINT, PATH_CERT, PATH_KEY, PATH_ROOT)
+    # try:
+    #     aws.connect()
+    # except Exception as e:
+    #     print(f"Error conectando a AWS (seguiré offline): {e}")
 
 
     while True:
@@ -196,7 +198,8 @@ def process_frames(cap: cv2.VideoCapture, writer: cv2.VideoWriter, model, args, 
             )
             last_result = results[0] if results else None
             if last_result is not None:
-                print(f"Frame {frame_idx}: {len(last_result.boxes)} cars")
+                # print(f"Frame {frame_idx}: {len(last_result.boxes)} cars")
+                pass
 
             detections = yolo_result_to_detections(last_result) if last_result is not None else []
             track_ids = tracker.update(frame, detections)
@@ -206,7 +209,7 @@ def process_frames(cap: cv2.VideoCapture, writer: cv2.VideoWriter, model, args, 
             if car.centroids:
                 center_x, center_y = car.centroids[-1]
 
-                # Contador horizontal (línea verde completa)
+                # ----- CONTADOR HORIZONTAL (arriba <-> abajo) -----
                 evento = counter_horizontal.update(
                     track_id,
                     center_x=int(center_x),
@@ -216,21 +219,26 @@ def process_frames(cap: cv2.VideoCapture, writer: cv2.VideoWriter, model, args, 
                     frame_shape=frame_shape
                 )
 
-                if evento: # Si evento no es None, es que cruzó
+                if evento:  # "forward" / "backward"
                     payload = {
-                        "camera_id": "camara_1",      # Partition Key
-                        "timestamp": int(time.time()), # Sort Key (Unix time para orden)
-                        "iso_date": datetime.now().isoformat(), # ¡NUEVO! "2025-11-20T16:30:00" (Para gráficas)
-                        "direction": evento,          # "forward" / "backward"
+                        "camera_id": camera_id,
+                        "timestamp": int(time.time()),
+                        "iso_date": datetime.now().isoformat(),
+                        "direction": evento,
                         "counter_type": "horizontal",
-                        "track_id": track_id,         # ID del coche
-                        "video_file": file_name_in_s3 # ¡NUEVO! Guardamos qué video corresponde a este dato
+                        "track_id": track_id,
+                        "video_file": file_name_in_s3,
+                        "center_x": int(center_x),
+                        "center_y": int(center_y),
+                        # Para aforo no lo usamos, pero dejamos zone explícito
+                        "zone": "traffic"
                     }
-                    aws.publish_event("trafico/conteo", payload)
-                    print(f"Evento enviado a AWS: Coche {track_id} -> {evento}")
+                    save_event_to_json(payload)
+                    # aws.publish_event("trafico/conteo", payload)
+                    print(f"[H] Evento detectado: Coche {track_id} -> {evento}")
 
-                # Línea vertical izquierda (roja) - estirada de 0.2 a 0.85
-                counter_left.update(
+                # ----- CONTADOR LEFT (entrada) -----
+                evento_left = counter_left.update(
                     track_id,
                     center_x=int(center_x),
                     center_y=int(center_y),
@@ -239,8 +247,25 @@ def process_frames(cap: cv2.VideoCapture, writer: cv2.VideoWriter, model, args, 
                     frame_shape=frame_shape
                 )
 
-                # Línea vertical derecha (azul) - estirada de 0.2 a 0.85
-                counter_right.update(
+                if evento_left:  # cruzó la línea izquierda en la dirección configurada
+                    payload_left = {
+                        "camera_id": camera_id,
+                        "timestamp": int(time.time()),
+                        "iso_date": datetime.now().isoformat(),
+                        "direction": evento_left,          # ej: "forward"/"backward"
+                        "counter_type": "left",
+                        "track_id": track_id,
+                        "video_file": file_name_in_s3,
+                        "center_x": int(center_x),
+                        "center_y": int(center_y),
+                        # Interpretamos línea izquierda como ENTRADA
+                        "zone": "entry"
+                    }
+                    save_event_to_json(payload_left)
+                    print(f"[L] Entrada detectada: Coche {track_id} -> {evento_left}")
+
+                # ----- CONTADOR RIGHT (salida) -----
+                evento_right = counter_right.update(
                     track_id,
                     center_x=int(center_x),
                     center_y=int(center_y),
@@ -248,6 +273,23 @@ def process_frames(cap: cv2.VideoCapture, writer: cv2.VideoWriter, model, args, 
                     line_end=0.4,
                     frame_shape=frame_shape
                 )
+
+                if evento_right:  # cruzó la línea derecha en la dirección configurada
+                    payload_right = {
+                        "camera_id": camera_id,
+                        "timestamp": int(time.time()),
+                        "iso_date": datetime.now().isoformat(),
+                        "direction": evento_right,
+                        "counter_type": "right",
+                        "track_id": track_id,
+                        "video_file": file_name_in_s3,
+                        "center_x": int(center_x),
+                        "center_y": int(center_y),
+                        # Interpretamos línea derecha como SALIDA
+                        "zone": "exit"
+                    }
+                    save_event_to_json(payload_right)
+                    print(f"[R] Salida detectada: Coche {track_id} -> {evento_right}")
 
         annotated = tracker.draw_tracks(frame.copy(), min_hits=1)
 
@@ -289,15 +331,45 @@ def process_frames(cap: cv2.VideoCapture, writer: cv2.VideoWriter, model, args, 
 
     # --- NUEVA SECCIÓN S3 ---
     
-    # 1. Configura tus credenciales (COPIADAS DE AWS ACADEMY)
-    AWS_CREDS = {
-    # Pegar aqui lo del whatsapp (2)
-    }
-    BUCKET_NAME = "videos-trafic-mapgd" # Tu bucket creado en paso 2
-    
-    # 3. Subir
-    upload_to_s3(str(out_path), BUCKET_NAME, file_name_in_s3, AWS_CREDS)
+    # # 1. Configura tus credenciales (COPIADAS DE AWS ACADEMY)
+    # AWS_CREDS = {
+    # # Pegar aqui lo del whatsapp (2)
+    # }
+    # BUCKET_NAME = "videos-trafic-mapgd" # Tu bucket creado en paso 2
+    # 
+    # # 3. Subir
+    # upload_to_s3(str(out_path), BUCKET_NAME, file_name_in_s3, AWS_CREDS)
     
     # ------------------------
 
     return frame_idx, elapsed, out_path
+
+def save_event_to_json(event_data, output_dir="datos"):
+    """
+    Guarda un evento de tráfico en un archivo JSON local.
+
+    El nombre incluye: timestamp, track_id y video_file (sanitizado)
+    para reducir colisiones entre procesos.
+    """
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    timestamp = event_data.get("timestamp", int(time.time()))
+    track_id = event_data.get("track_id", "unknown")
+    video_file = event_data.get("video_file", "novideo")
+
+    # Sanitizar el nombre de vídeo para usarlo en el fichero
+    base_video = os.path.basename(video_file)
+    base_video = os.path.splitext(base_video)[0]
+    safe_video = "".join(c if c.isalnum() or c in "-_" else "_" for c in base_video)
+
+    filename = f"event_{timestamp}_{track_id}_{safe_video}.json"
+    filepath = Path(output_dir) / filename
+
+    try:
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(event_data, f, indent=2, ensure_ascii=False)
+        print(f"✓ Evento guardado: {filepath}")
+        return True
+    except Exception as e:
+        print(f"✗ Error guardando evento: {e}")
+        return False

@@ -1,7 +1,7 @@
 # mqtt_client.py
 import json
-from awscrt import io, mqtt, auth, http
-from awsiot import mqtt_connection_builder
+# from awscrt import io, mqtt, auth, http
+# from awsiot import mqtt_connection_builder
 
 class AWSClient:
     def __init__(self, endpoint, cert_path, key_path, root_ca_path, client_id="test_tracker"):

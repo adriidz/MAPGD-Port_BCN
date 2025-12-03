@@ -1,0 +1,12 @@
+{
+  "camera_id": "parking_zona1",
+  "timestamp": 1764777900,
+  "iso_date": "2025-12-03T17:05:00.129421",
+  "direction": "backward",
+  "counter_type": "left",
+  "track_id": 132,
+  "video_file": "cars_20251203_170110.mp4",
+  "center_x": 161,
+  "center_y": 317,
+  "zone": "entry"
+}

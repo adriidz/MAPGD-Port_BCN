@@ -1,0 +1,12 @@
+{
+  "camera_id": "zona1_carga",
+  "timestamp": 1764777844,
+  "iso_date": "2025-12-03T17:04:04.719262",
+  "direction": "backward",
+  "counter_type": "left",
+  "track_id": 72,
+  "video_file": "cars_20251203_170205.mp4",
+  "center_x": 160,
+  "center_y": 322,
+  "zone": "entry"
+}
