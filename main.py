@@ -44,7 +44,13 @@ def main():
         print(e)
         sys.exit(1)
 
-    writer, out_path, width, height, fps_in = prepare_writer(cap)
+    # El writer y el nombre de salida se gestionan dentro de process_frames
+    writer = None
+    out_path = None
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps_in = cap.get(cv2.CAP_PROP_FPS) or 30.0
+
     model = init_model(args.weights)
     setup_display_if_needed(args.display, width, height)
     tracker = Tracker_predict()

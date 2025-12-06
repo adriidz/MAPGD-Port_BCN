@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from tracker import *
 import json
+import subprocess
 
 from mqtt_client import AWSClient
 # import boto3
@@ -76,21 +77,59 @@ def open_capture(video_path: Path):
         raise IOError(f"Could not open video source: {video_path}")
     return cap
 
-def prepare_writer(cap: cv2.VideoCapture):
+def prepare_writer(cap: cv2.VideoCapture, camera_id: str = "camara_1"):
     width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps_in = cap.get(cv2.CAP_PROP_FPS) or 30.0
     out_dir = Path(SETTINGS["runs_dir"]) / "cars_video"
     out_dir.mkdir(parents=True, exist_ok=True)
+
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_path = out_dir / f"cars_{ts}.mp4"
+
+    # sanitizar camera_id para nombre de archivo
+    safe_cam = "".join(c if c.isalnum() or c in "-_" else "_" for c in str(camera_id))
+    base_name = f"cars_{safe_cam}_{ts}.mp4"
+
+    out_path = out_dir / base_name
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     writer = cv2.VideoWriter(str(out_path), fourcc, fps_in, (width, height))
     if not writer.isOpened():
-        out_path = out_dir / f"cars_{ts}.avi"
+        out_path = out_dir / base_name.replace(".mp4", ".avi")
         fourcc = cv2.VideoWriter_fourcc(*"MJPG")
         writer = cv2.VideoWriter(str(out_path), fourcc, fps_in, (width, height))
     return writer, out_path, width, height, fps_in
+
+def generate_web_video(source_path: Path) -> Path | None:
+    """
+    Genera una versión web del vídeo (H.264, yuv420p, faststart) con sufijo _web.
+    Usa ffmpeg si está disponible. Devuelve la ruta del webmp4 o None si falla.
+    """
+    try:
+        source_path = Path(source_path)
+        if not source_path.is_file():
+            return None
+
+        web_path = source_path.with_name(source_path.stem + "_web" + source_path.suffix)
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(source_path),
+            "-vcodec",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-acodec",
+            "aac",
+            "-movflags",
+            "+faststart",
+            str(web_path),
+        ]
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return web_path if web_path.is_file() else None
+    except Exception as e:
+        print(f"[WARN] No se pudo crear versión web de {source_path}: {e}")
+        return None
 
 def init_model(weights_path: str):
     return YOLO(weights_path)
@@ -143,12 +182,27 @@ def setup_display_if_needed(display: bool, width: int, height: int):
 #         print(f"Error subiendo a S3: {e}")
 #         return False
 
+def map_to_web_name(video_name: str) -> str:
+    """
+    Si existe un archivo _web en runs/cars_video con el mismo nombre base,
+    devuelve ese nombre; si no, deja el original.
+    """
+    if not video_name:
+        return video_name
+    p = Path(video_name)
+    print(f"Mapping video name: {p.name}")
+    web_candidate = p.with_name(p.stem + "_web" + p.suffix)
+    full_web = Path(SETTINGS["runs_dir"]) / "cars_video" / web_candidate.name
+    return web_candidate.name
+    # return web_candidate.name if full_web.is_file() else p.name
+
 def process_frames(cap: cv2.VideoCapture, writer: cv2.VideoWriter, model, args, width: int, height: int, fps_in: float,
                    out_path: Path, tracker: Tracker, camera_id: str = "camara_1"):
     # 2. Definir nombre del archivo en la nube (usamos el mismo nombre del archivo local)
     # out_path es un objeto Path, lo convertimos a string y cogemos solo el nombre del archivo
-    writer, out_path, width, height, fps_in = prepare_writer(cap)
-    file_name_in_s3 = out_path.name 
+    writer, out_path, width, height, fps_in = prepare_writer(cap, camera_id=camera_id)
+    file_name_in_s3 = out_path.name
+    file_name_in_s3 = map_to_web_name(file_name_in_s3)
 
     # Contador horizontal (cuenta ambas direcciones: arriba-abajo)
     counter_horizontal = VehicleCounter(line_position=2 / 3, margin=5, orientation='horizontal')
@@ -328,6 +382,14 @@ def process_frames(cap: cv2.VideoCapture, writer: cv2.VideoWriter, model, args, 
     print(f"Frames: {frame_idx} | Elapsed: {elapsed:.1f}s | Out: {out_path}")
     print(f"Arriba->Abajo: {counter_horizontal.count_forward} | Abajo->Arriba: {counter_horizontal.count_backward}")
     print(f"Der->Izq: {counter_left.count_backward} | Izq->Der: {counter_right.count_forward}")
+
+    # Generar versión web del vídeo para el dashboard
+    web_out = generate_web_video(out_path)
+    if web_out:
+        print(f"✓ Versión web generada: {web_out}")
+        file_name_in_s3 = web_out.name  # a partir de aquí, nombre _web
+    else:
+        print("⚠ No se ha generado versión web del vídeo (revisa ffmpeg).")
 
     # --- NUEVA SECCIÓN S3 ---
     
